@@ -59,7 +59,7 @@ M-Team 分类白名单：401,419,420,421,439,403,402,438,435,404,405
 
 - 在 M-Team 种子列表的原下载图标旁新增 **qB** 按钮。
 - 在种子详情页的原「下載」按钮旁新增 **qB 下载** 按钮。
-- 通过 M-Team `genDlToken` 获取一次性链接，由扩展下载 `.torrent` 后上传到 qBittorrent Web API。
+- 通过 M-Team `genDlToken` 获取一次性链接并提交给 qBittorrent Web API，由 qBittorrent 直接获取 `.torrent`。
 - API Key、qBittorrent 账号和密码仅保存在本机 `chrome.storage.local`，公共源码不预置个人配置。
 
 安装、配置及排错说明：[浏览器扩展 README](browser-extension/mteam-qb-quickadd/README.md)

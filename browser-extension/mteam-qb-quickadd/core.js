@@ -81,21 +81,6 @@
     return /^\d{1,20}$/.test(queryId || "") ? queryId : "";
   }
 
-  function containsAscii(bytes, needle) {
-    outer: for (let index = 0; index <= bytes.length - needle.length; index += 1) {
-      for (let offset = 0; offset < needle.length; offset += 1) {
-        if (bytes[index + offset] !== needle.charCodeAt(offset)) continue outer;
-      }
-      return true;
-    }
-    return false;
-  }
-
-  function isTorrentPayload(value) {
-    const bytes = value instanceof Uint8Array ? value : new Uint8Array(value || 0);
-    return bytes.length >= 10 && bytes[0] === 0x64 && containsAscii(bytes, "4:info");
-  }
-
   return Object.freeze({
     isMteamHost,
     normalizeHttpBaseUrl,
@@ -103,7 +88,6 @@
     mteamTokenEndpoint,
     escapeRegex,
     findDownloadUrl,
-    torrentIdFromUrl,
-    isTorrentPayload
+    torrentIdFromUrl
   });
 });

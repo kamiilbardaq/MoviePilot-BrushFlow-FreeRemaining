@@ -7,13 +7,11 @@ const {
   permissionPatternFor,
   mteamTokenEndpoint,
   escapeRegex,
-  findDownloadUrl,
-  isTorrentPayload
+  findDownloadUrl
 } = globalThis.MTQBCore;
 
 const CONFIG_KEY = "mtqbConfig";
 const QB_HEADER_RULE_ID = 91001;
-const MAX_TORRENT_BYTES = 20 * 1024 * 1024;
 let addTorrentActive = false;
 
 const DEFAULT_CONFIG = Object.freeze({
@@ -187,7 +185,7 @@ async function getMteamDownloadUrl(config, torrentId) {
   return downloadUrl;
 }
 
-async function downloadTorrentFile(config, downloadUrl) {
+function validateMteamDownloadUrl(downloadUrl) {
   let url;
   try {
     url = new URL(downloadUrl);
@@ -197,77 +195,10 @@ async function downloadTorrentFile(config, downloadUrl) {
   if (!isMteamHost(url.hostname)) {
     throw new PublicError("MTEAM_LINK_HOST", "M-Team 下载链接使用了未预期的主机");
   }
-
-  let response;
-  try {
-    response = await fetch(url.href, {
-      method: "GET",
-      headers: {
-        "Accept": "application/x-bittorrent, application/octet-stream;q=0.9, */*;q=0.8"
-      },
-      cache: "no-store",
-      credentials: "omit",
-      redirect: "follow"
-    });
-  } catch {
-    throw new PublicError("MTEAM_DOWNLOAD_NETWORK", "M-Team 种子文件下载失败");
+  if (url.protocol !== "https:") {
+    throw new PublicError("MTEAM_LINK_PROTOCOL", "M-Team 下载链接未使用 HTTPS");
   }
-  if (!response.ok) {
-    throw new PublicError("MTEAM_DOWNLOAD_HTTP", `M-Team 种子文件下载失败（HTTP ${response.status}）`);
-  }
-  try {
-    if (!isMteamHost(new URL(response.url).hostname)) {
-      throw new PublicError("MTEAM_LINK_HOST", "M-Team 种子下载跳转到了未预期的主机");
-    }
-  } catch (error) {
-    if (error instanceof PublicError) throw error;
-    throw new PublicError("MTEAM_LINK", "M-Team 种子下载最终地址格式异常");
-  }
-  const declaredSize = Number(response.headers.get("content-length") || 0);
-  if (declaredSize > MAX_TORRENT_BYTES) {
-    throw new PublicError("MTEAM_FILE_SIZE", "M-Team 返回的种子文件超过 20 MiB 限制");
-  }
-  const bytes = await readLimitedTorrentBytes(response);
-  if (!isTorrentPayload(bytes)) {
-    throw new PublicError("MTEAM_FILE", "M-Team 返回的内容不是有效 torrent 文件");
-  }
-  return new Blob([bytes], { type: "application/x-bittorrent" });
-}
-
-async function readLimitedTorrentBytes(response) {
-  const reader = response.body?.getReader?.();
-  if (!reader) {
-    const bytes = new Uint8Array(await response.arrayBuffer());
-    if (bytes.byteLength > MAX_TORRENT_BYTES) {
-      throw new PublicError("MTEAM_FILE_SIZE", "M-Team 返回的种子文件超过 20 MiB 限制");
-    }
-    return bytes;
-  }
-
-  const chunks = [];
-  let total = 0;
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      total += value.byteLength;
-      if (total > MAX_TORRENT_BYTES) {
-        await reader.cancel().catch(() => undefined);
-        throw new PublicError("MTEAM_FILE_SIZE", "M-Team 返回的种子文件超过 20 MiB 限制");
-      }
-      chunks.push(value);
-    }
-  } finally {
-    reader.releaseLock();
-  }
-
-  const bytes = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return bytes;
+  return url.href;
 }
 
 function qbEndpoint(config, path) {
@@ -305,18 +236,31 @@ async function loginQb(config) {
   }
 }
 
+async function verifyQbSession(config) {
+  const response = await qbFetch(config, "app/version", { method: "GET" });
+  const version = (await response.text()).trim();
+  if (!response.ok) {
+    throw new PublicError(
+      "QB_SESSION",
+      `qBittorrent 会话校验失败（HTTP ${response.status}），请检查浏览器 Cookie 设置`
+    );
+  }
+  return version;
+}
+
 async function prepareQb(config) {
   await assertQbHostPermission(config.qbBaseUrl);
   await configureQbHeaderRule(config.qbBaseUrl);
   await loginQb(config);
+  return verifyQbSession(config);
 }
 
-async function addTorrentFileToQb(config, torrentBlob, torrentId) {
+async function addTorrentUrlToQb(config, downloadUrl, temporaryTag) {
   const form = new FormData();
-  form.append("torrents", torrentBlob, `mteam-${torrentId}.torrent`);
+  form.append("urls", validateMteamDownloadUrl(downloadUrl));
   if (config.savePath) form.append("savepath", config.savePath);
   if (config.category) form.append("category", config.category);
-  if (config.tags) form.append("tags", config.tags);
+  form.append("tags", [config.tags, temporaryTag].filter(Boolean).join(","));
   if (config.paused) form.append("paused", "true");
   if (config.autoTmm) form.append("autoTMM", "true");
   if (config.sequentialDownload) form.append("sequentialDownload", "true");
@@ -334,6 +278,69 @@ async function addTorrentFileToQb(config, torrentBlob, torrentId) {
   if (/^fails?\.?$/i.test(text)) {
     throw new PublicError("QB_ADD", "qBittorrent 未接收该任务，种子可能已存在或下载链接已失效");
   }
+  if (text !== "Ok.") {
+    throw new PublicError("QB_ADD", `qBittorrent 返回异常：${cleanRemoteMessage(text, "未知响应")}`);
+  }
+}
+
+function wait(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+async function removeTemporaryTag(config, hashes, temporaryTag) {
+  if (!hashes.length) return;
+  const response = await qbFetch(config, "torrents/removeTags", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8" },
+    body: new URLSearchParams({
+      hashes: hashes.join("|"),
+      tags: temporaryTag
+    })
+  });
+  if (!response.ok) {
+    throw new PublicError("QB_TAG_CLEANUP", `qBittorrent 临时标签清理失败（HTTP ${response.status}）`);
+  }
+  const deleteResponse = await qbFetch(config, "torrents/deleteTags", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8" },
+    body: new URLSearchParams({ tags: temporaryTag })
+  });
+  if (!deleteResponse.ok) {
+    throw new PublicError("QB_TAG_CLEANUP", `qBittorrent 临时标签删除失败（HTTP ${deleteResponse.status}）`);
+  }
+}
+
+async function getTorrentsByTag(config, temporaryTag) {
+  const path = `torrents/info?tag=${encodeURIComponent(temporaryTag)}`;
+  const response = await qbFetch(config, path, { method: "GET" });
+  const text = await response.text();
+  if (!response.ok) {
+    throw new PublicError("QB_CONFIRM", `qBittorrent 任务确认失败（HTTP ${response.status}）`);
+  }
+  const torrents = parseJsonResponse(text, "qBittorrent");
+  return Array.isArray(torrents) ? torrents : [];
+}
+
+async function waitForAddedTorrent(config, temporaryTag) {
+  const deadline = Date.now() + 15000;
+  while (Date.now() < deadline) {
+    const torrents = await getTorrentsByTag(config, temporaryTag);
+    if (torrents.length) {
+      await wait(2500);
+      const settledTorrents = await getTorrentsByTag(config, temporaryTag).catch(() => torrents);
+      const confirmedTorrents = settledTorrents.length ? settledTorrents : torrents;
+      const hashes = confirmedTorrents
+        .map((torrent) => String(torrent?.hash || ""))
+        .filter((hash) => /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(hash));
+      await removeTemporaryTag(config, hashes, temporaryTag).catch(() => undefined);
+      return confirmedTorrents[0];
+    }
+    await wait(1000);
+  }
+  throw new PublicError(
+    "QB_CONFIRM_TIMEOUT",
+    "下载链接已提交，但 qBittorrent 在 15 秒内没有生成任务，请检查 qB 日志、网络和保存路径"
+  );
 }
 
 async function addTorrent(message, sender) {
@@ -357,10 +364,14 @@ async function addTorrent(message, sender) {
     const config = await getConfig();
     validateReadyConfig(config);
     const downloadUrl = await getMteamDownloadUrl(config, torrentId);
-    const torrentBlob = await downloadTorrentFile(config, downloadUrl);
     await prepareQb(config);
-    await addTorrentFileToQb(config, torrentBlob, torrentId);
-    return { message: `种子 ${torrentId} 已发送到 qBittorrent` };
+    const temporaryTag = `mtqb-${torrentId}-${crypto.randomUUID().slice(0, 8)}`;
+    await addTorrentUrlToQb(config, downloadUrl, temporaryTag);
+    const torrent = await waitForAddedTorrent(config, temporaryTag);
+    const name = cleanRemoteMessage(torrent?.name, `种子 ${torrentId}`);
+    const state = String(torrent?.state || "");
+    const stateHint = state === "error" ? "，但任务状态为 error，请检查 qB 保存路径权限" : "";
+    return { message: `${name} 已进入 qBittorrent${stateHint}` };
   } finally {
     addTorrentActive = false;
   }
@@ -376,12 +387,7 @@ async function testQb(sender) {
   }
   const config = await getConfig();
   validateReadyConfig(config);
-  await prepareQb(config);
-  const response = await qbFetch(config, "app/version", { method: "GET" });
-  const version = (await response.text()).trim();
-  if (!response.ok) {
-    throw new PublicError("QB_TEST", `qBittorrent 版本检查失败（HTTP ${response.status}）`);
-  }
+  const version = await prepareQb(config);
   return { message: `qBittorrent 连接成功，版本 ${version || "unknown"}` };
 }
 

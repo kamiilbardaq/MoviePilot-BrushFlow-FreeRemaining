@@ -9,8 +9,7 @@ const {
   mteamTokenEndpoint,
   escapeRegex,
   findDownloadUrl,
-  torrentIdFromUrl,
-  isTorrentPayload
+  torrentIdFromUrl
 } = require("../core.js");
 
 test("M-Team 主机匹配不接受伪造后缀", () => {
@@ -54,11 +53,4 @@ test("从列表链接和详情页提取数字 torrent id", () => {
   assert.equal(torrentIdFromUrl("/detail/123456", "https://kp.m-team.cc/browse"), "123456");
   assert.equal(torrentIdFromUrl("https://kp.m-team.cc/torrent?id=9988"), "9988");
   assert.equal(torrentIdFromUrl("https://kp.m-team.cc/detail/not-a-number"), "");
-});
-
-test("区分 bencode torrent 与 HTML 错误页", () => {
-  const torrent = new TextEncoder().encode("d8:announce13:https://t.test4:infod4:name4:testee");
-  const html = new TextEncoder().encode("<!doctype html><title>error</title>");
-  assert.equal(isTorrentPayload(torrent), true);
-  assert.equal(isTorrentPayload(html), false);
 });
