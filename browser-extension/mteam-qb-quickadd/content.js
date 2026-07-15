@@ -98,14 +98,20 @@ function closestTorrentRow(anchor) {
 
 function sendMessage(message) {
   return new Promise((resolve, reject) => {
-    chrome.runtime.sendMessage(message, (response) => {
-      const runtimeError = chrome.runtime.lastError;
-      if (runtimeError) {
-        reject(new Error(runtimeError.message));
-      } else {
-        resolve(response);
-      }
-    });
+    const runtime = globalThis.chrome?.runtime;
+    if (!runtime?.sendMessage) {
+      reject(new Error("扩展已更新，请刷新 M-Team 页面后重试"));
+      return;
+    }
+    try {
+      runtime.sendMessage(message, (response) => {
+        const runtimeError = globalThis.chrome?.runtime?.lastError;
+        if (runtimeError) reject(new Error(runtimeError.message));
+        else resolve(response);
+      });
+    } catch {
+      reject(new Error("扩展已更新，请刷新 M-Team 页面后重试"));
+    }
   });
 }
 
