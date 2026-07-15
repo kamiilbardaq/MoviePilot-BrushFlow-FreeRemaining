@@ -2,7 +2,7 @@
 
 基于 [InfinityPacer/MoviePilot-Plugins](https://github.com/InfinityPacer/MoviePilot-Plugins/tree/main/plugins.v2/brushflowlowfreq) 的低频版二次开发，新增 `free_remaining` 最低免费剩余时间规则。感谢 [@jxxghp](https://github.com/jxxghp) 与 [@InfinityPacer](https://github.com/InfinityPacer) 的原始工作。
 
-**请注意，本文档仅适用于 `MoviePilot.v2` 站点刷流插件，`MoviePilot.v1` 站点刷流插件，详情见 [v1插件](../../plugins/brushflowlowfreq/README.md)**
+**本文档仅适用于 `MoviePilot V2`。**
 
 ## 版本更新日志
 
@@ -152,7 +152,7 @@
 ### 配置示例
 
 ```json
-// 以下为配置示例，请参考：https://github.com/InfinityPacer/MoviePilot-Plugins/blob/main/README.md 进行配置
+// 以下为配置示例，请参考：https://github.com/kamiilbardaq/MoviePilot-BrushFlow-FreeRemaining/blob/main/plugins.v2/brushflowlowfreq/README.md
 // 如与全局保持一致的配置项，请勿在站点配置中配置
 // 注意无关内容需使用 // 注释
 [{
@@ -261,5 +261,3 @@
 
 - **为什么配置了保存目录，但仍然保存到了 QB 的默认下载目录？**
   - 请检查下载器是否开启了「自动分类管理」，开启后下载目录由 QB 管理，此时「保存目录」配置项将失效。请提前在 QB 中配置相关选项。
-
-![](../../images/2024-05-02-03-16-42.png)
