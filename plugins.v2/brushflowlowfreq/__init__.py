@@ -74,6 +74,8 @@ class BrushConfig:
         self.except_subscribe = config.get("except_subscribe", True)
         self.brush_sequential = config.get("brush_sequential", False)
         self.proxy_delete = config.get("proxy_delete", False)
+        # 仅在只刷免费/2X免费时启用促销过期未完成下载清理
+        self.del_no_free = config.get("del_no_free", False) if self.freeleech in ["free", "2xfree"] else False
         self.active_time_range = config.get("active_time_range")
         self.cron = config.get("cron")
         self.qb_category = config.get("qb_category")
@@ -120,6 +122,7 @@ class BrushConfig:
             "seed_inactivetime",
             "save_path",
             "proxy_delete",
+            "del_no_free",
             "qb_category",
             "site_hr_active",
             "site_skip_tips"
@@ -188,6 +191,8 @@ class BrushConfig:
     "seed_inactivetime": "",
     "save_path": "/downloads/site1",
     "proxy_delete": false,
+    // 免费促销过期后删除仍未完成的下载任务及其文件
+    "del_no_free": false,
     "qb_category": "刷流",
     "site_hr_active": true,
     "site_skip_tips": true
@@ -256,7 +261,7 @@ class BrushFlowLowFreq(_PluginBase):
     # 插件图标
     plugin_icon = "brush.jpg"
     # 插件版本
-    plugin_version = "4.3.3.1"
+    plugin_version = "4.3.3.2"
     # 插件作者
     plugin_author = "jxxghp,InfinityPacer"
     # 作者主页
@@ -1672,6 +1677,22 @@ class BrushFlowLowFreq(_PluginBase):
                                                     {
                                                         'component': 'VSwitch',
                                                         'props': {
+                                                            'model': 'del_no_free',
+                                                            'label': '删除促销过期的未完成下载',
+                                                        }
+                                                    }
+                                                ]
+                                            },
+                                            {
+                                                'component': 'VCol',
+                                                'props': {
+                                                    'cols': 12,
+                                                    'md': 4
+                                                },
+                                                'content': [
+                                                    {
+                                                        'component': 'VSwitch',
+                                                        'props': {
                                                             'model': 'sync_official',
                                                             'label': '双向同步官方数据',
                                                         }
@@ -1873,6 +1894,7 @@ class BrushFlowLowFreq(_PluginBase):
             "except_subscribe": True,
             "brush_sequential": False,
             "proxy_delete": False,
+            "del_no_free": False,
             "freeleech": "free",
             "free_remaining": 24,
             "hr": "yes",
@@ -2368,18 +2390,30 @@ class BrushFlowLowFreq(_PluginBase):
         if brush_config.freeleech == "2xfree" and torrent.uploadvolumefactor != 2:
             return False, "非双倍上传种子"
 
-        # 最低免费剩余时间（小时）
-        # 没有促销截止时间通常表示长期/永久免费，直接放行；有截止时间时必须满足配置阈值。
-        if brush_config.freeleech in ["free", "2xfree"] and brush_config.free_remaining:
+        # 记录当前免费剩余时间，并按配置的最低剩余小时数过滤。
+        if brush_config.freeleech in ["free", "2xfree"]:
+            threshold = float(brush_config.free_remaining or 0)
             if torrent.freedate:
                 remaining_hours = self.__get_free_remaining_hours(torrent.freedate)
                 if remaining_hours is None:
-                    return False, f"免费截止时间格式异常：{torrent.freedate}"
-                if remaining_hours < float(brush_config.free_remaining):
-                    return False, (f"免费剩余 {max(remaining_hours, 0):.1f} 小时，"
-                                   f"少于最低要求 {brush_config.free_remaining} 小时")
+                    logger.warning(
+                        f"[FreeRemaining] 站点：{torrent.site_name}，免费截止时间格式异常：{torrent.freedate}，"
+                        f"种子：{torrent.title}|{torrent.description}")
+                    if threshold > 0:
+                        return False, f"免费截止时间格式异常：{torrent.freedate}"
+                else:
+                    remaining_text = self.__format_free_remaining(remaining_hours)
+                    logger.info(
+                        f"[FreeRemaining] 站点：{torrent.site_name}，当前免费剩余：{remaining_text} "
+                        f"（{remaining_hours:.2f} 小时），最低要求：{threshold:g} 小时，"
+                        f"促销截止：{torrent.freedate}，种子：{torrent.title}|{torrent.description}")
+                    if threshold > 0 and remaining_hours < threshold:
+                        return False, (f"免费剩余 {max(remaining_hours, 0):.1f} 小时，"
+                                       f"少于最低要求 {brush_config.free_remaining} 小时")
             else:
-                logger.debug(f"种子 {torrent.title} 未提供免费截止时间，按长期/永久免费放行")
+                logger.info(
+                    f"[FreeRemaining] 站点：{torrent.site_name}，未提供免费截止时间，按长期/永久免费放行，"
+                    f"种子：{torrent.title}|{torrent.description}")
 
         # H&R
         if brush_config.hr == "yes" and torrent.hit_and_run:
@@ -2669,6 +2703,42 @@ class BrushFlowLowFreq(_PluginBase):
 
         return proxy_delete_torrents, not_proxy_delete_torrents
 
+    def __evaluate_expired_free_download(self, site_name: str, torrent_info: dict,
+                                         torrent_task: dict) -> Tuple[bool, Optional[str]]:
+        """判断免费促销是否已经过期且下载仍未完成。"""
+        brush_config = self.__get_brush_config(sitename=site_name)
+        if not brush_config.del_no_free:
+            return False, None
+
+        downloaded = torrent_info.get("downloaded", 0) or 0
+        total_size = torrent_info.get("total_size", 0) or 0
+        if total_size <= 0 or downloaded >= total_size:
+            return False, None
+
+        freedate = torrent_task.get("freedate")
+        torrent_title = torrent_task.get("title", "")
+        if not freedate:
+            logger.warning(
+                f"[FreeRemaining] 站点：{site_name}，已开启‘删除促销过期的未完成下载’，"
+                f"但未获取到促销截止时间，跳过删除：{torrent_title}")
+            return False, None
+
+        remaining_hours = self.__get_free_remaining_hours(freedate)
+        if remaining_hours is None:
+            logger.warning(
+                f"[FreeRemaining] 站点：{site_name}，促销截止时间格式异常：{freedate}，"
+                f"跳过删除：{torrent_title}")
+            return False, None
+
+        logger.info(
+            f"[FreeRemaining] 站点：{site_name}，未完成任务当前免费剩余："
+            f"{self.__format_free_remaining(remaining_hours)}（{remaining_hours:.2f} 小时），"
+            f"已下载：{self.__bytes_to_gb(downloaded):.2f} GB / "
+            f"{self.__bytes_to_gb(total_size):.2f} GB，促销截止：{freedate}，种子：{torrent_title}")
+        if remaining_hours <= 0:
+            return True, "促销过期且下载未完成"
+        return False, None
+
     def __evaluate_conditions_for_delete(self, site_name: str, torrent_info: dict, torrent_task: dict) \
             -> Tuple[bool, str]:
         """
@@ -2690,6 +2760,11 @@ class BrushFlowLowFreq(_PluginBase):
             if brush_config.seed_ratio and torrent_info.get("ratio") >= float(brush_config.seed_ratio):
                 return True, f"H&R种子，分享率 {torrent_info.get('ratio'):.2f}，大于 {brush_config.seed_ratio}"
             return False, "H&R种子，未能满足设置的H&R删除条件"
+
+        del_no_free, del_no_free_reason = self.__evaluate_expired_free_download(
+            site_name=site_name, torrent_info=torrent_info, torrent_task=torrent_task)
+        if del_no_free:
+            return True, del_no_free_reason
 
         # 处理其他场景，1. 不是H&R种子；2. 是H&R种子但没有特定条件配置
         reason = reason if not hit_and_run else "H&R种子（未设置H&R条件），未能满足设置的删除条件"
@@ -2713,13 +2788,19 @@ class BrushFlowLowFreq(_PluginBase):
 
         return True, reason if not hit_and_run else "H&R种子（未设置H&R条件），" + reason
 
-    def __evaluate_proxy_pre_conditions_for_delete(self, site_name: str, torrent_info: dict) -> Tuple[bool, str]:
+    def __evaluate_proxy_pre_conditions_for_delete(self, site_name: str, torrent_info: dict,
+                                                   torrent_task: dict) -> Tuple[bool, str]:
         """
         评估动态删除前置条件并返回是否应删除种子及其原因
         """
         brush_config = self.__get_brush_config(sitename=site_name)
 
         reason = "未能满足动态删除设置的前置删除条件"
+
+        del_no_free, del_no_free_reason = self.__evaluate_expired_free_download(
+            site_name=site_name, torrent_info=torrent_info, torrent_task=torrent_task)
+        if del_no_free:
+            return True, del_no_free_reason
 
         if brush_config.download_time and torrent_info.get("downloaded") < torrent_info.get(
                 "total_size") and torrent_info.get("dltime") >= float(brush_config.download_time) * 3600:
@@ -2789,7 +2870,8 @@ class BrushFlowLowFreq(_PluginBase):
 
             # 删除种子的具体实现可能会根据实际情况略有不同
             should_delete, reason = self.__evaluate_proxy_pre_conditions_for_delete(site_name=site_name,
-                                                                                    torrent_info=torrent_info)
+                                                                                    torrent_info=torrent_info,
+                                                                                    torrent_task=torrent_task)
             if should_delete:
                 delete_hashes.append(torrent_hash)
                 self.__send_delete_message(site_name=site_name, torrent_title=torrent_title, torrent_desc=torrent_desc,
@@ -3174,6 +3256,7 @@ class BrushFlowLowFreq(_PluginBase):
             "except_subscribe": brush_config.except_subscribe,
             "brush_sequential": brush_config.brush_sequential,
             "proxy_delete": brush_config.proxy_delete,
+            "del_no_free": brush_config.del_no_free,
             "active_time_range": brush_config.active_time_range,
             "cron": brush_config.cron,
             "qb_category": brush_config.qb_category,
@@ -3799,6 +3882,20 @@ class BrushFlowLowFreq(_PluginBase):
             return (free_end - now).total_seconds() / 3600
         except (TypeError, ValueError, OverflowError):
             return None
+
+    @staticmethod
+    def __format_free_remaining(remaining_hours: float) -> str:
+        """将剩余小时数格式化为便于阅读的倒计时文本。"""
+        if remaining_hours <= 0:
+            return "已过期"
+        total_minutes = max(0, int(remaining_hours * 60))
+        days, minutes = divmod(total_minutes, 24 * 60)
+        hours, minutes = divmod(minutes, 60)
+        if days:
+            return f"{days}天{hours}小时{minutes}分钟"
+        if hours:
+            return f"{hours}小时{minutes}分钟"
+        return f"{minutes}分钟"
 
     @staticmethod
     def __get_pubminutes(pubdate: str) -> float:
