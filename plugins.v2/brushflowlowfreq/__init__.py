@@ -56,6 +56,8 @@ class BrushConfig:
         self.seeder = config.get("seeder")
         # 最低免费剩余时间（小时）。仅在促销类型为免费或 2X 免费时参与选种。
         self.free_remaining = self.__parse_number(config.get("free_remaining"))
+        # 本地时区与站点时区之差（小时）：本地 UTC+8、站点 UTC 时填写 +8。
+        self.timezone_offset = self.__parse_number(config.get("timezone_offset", 0)) or 0
         self.pubtime = config.get("pubtime")
         self.seed_time = self.__parse_number(config.get("seed_time"))
         self.hr_seed_time = self.__parse_number(config.get("hr_seed_time"))
@@ -112,6 +114,7 @@ class BrushConfig:
             "size",
             "seeder",
             "free_remaining",
+            "timezone_offset",
             "pubtime",
             "seed_time",
             "hr_seed_time",
@@ -181,6 +184,8 @@ class BrushConfig:
     "seeder": "1",
     // 限时免费至少还需剩余 24 小时；未提供截止时间的免费种按长期免费放行
     "free_remaining": 24,
+    // 本地时区减站点时区（小时）；例如本地 UTC+8、站点 UTC 填 8，相同时区填 0
+    "timezone_offset": 0,
     "pubtime": "5-120",
     "seed_time": 120,
     "hr_seed_time": 144,
@@ -261,7 +266,7 @@ class BrushFlowLowFreq(_PluginBase):
     # 插件图标
     plugin_icon = "brush.jpg"
     # 插件版本
-    plugin_version = "4.3.3.2"
+    plugin_version = "4.3.3.3"
     # 插件作者
     plugin_author = "jxxghp,InfinityPacer"
     # 作者主页
@@ -1304,6 +1309,25 @@ class BrushFlowLowFreq(_PluginBase):
                                                     {
                                                         'component': 'VTextField',
                                                         'props': {
+                                                            'model': 'timezone_offset',
+                                                            'label': '站点时差（小时）',
+                                                            'placeholder': '本地UTC+8/站点UTC填8',
+                                                            'type': 'number',
+                                                            'step': '0.25'
+                                                        }
+                                                    }
+                                                ]
+                                            },
+                                            {
+                                                'component': 'VCol',
+                                                'props': {
+                                                    "cols": 12,
+                                                    "md": 4
+                                                },
+                                                'content': [
+                                                    {
+                                                        'component': 'VTextField',
+                                                        'props': {
                                                             'model': 'pubtime',
                                                             'label': '发布时间（分钟）',
                                                             'placeholder': '如：5 或 5-10'
@@ -1897,6 +1921,7 @@ class BrushFlowLowFreq(_PluginBase):
             "del_no_free": False,
             "freeleech": "free",
             "free_remaining": 24,
+            "timezone_offset": 0,
             "hr": "yes",
             "enable_site_config": False,
             "site_config": BrushConfig.get_demo_site_config()
@@ -2394,7 +2419,8 @@ class BrushFlowLowFreq(_PluginBase):
         if brush_config.freeleech in ["free", "2xfree"]:
             threshold = float(brush_config.free_remaining or 0)
             if torrent.freedate:
-                remaining_hours = self.__get_free_remaining_hours(torrent.freedate)
+                remaining_hours = self.__get_free_remaining_hours(
+                    torrent.freedate, brush_config.timezone_offset)
                 if remaining_hours is None:
                     logger.warning(
                         f"[FreeRemaining] 站点：{torrent.site_name}，免费截止时间格式异常：{torrent.freedate}，"
@@ -2406,6 +2432,7 @@ class BrushFlowLowFreq(_PluginBase):
                     logger.info(
                         f"[FreeRemaining] 站点：{torrent.site_name}，当前免费剩余：{remaining_text} "
                         f"（{remaining_hours:.2f} 小时），最低要求：{threshold:g} 小时，"
+                        f"手动时差：{brush_config.timezone_offset:+g} 小时（仅无时区时间生效），"
                         f"促销截止：{torrent.freedate}，种子：{torrent.title}|{torrent.description}")
                     if threshold > 0 and remaining_hours < threshold:
                         return False, (f"免费剩余 {max(remaining_hours, 0):.1f} 小时，"
@@ -2453,20 +2480,23 @@ class BrushFlowLowFreq(_PluginBase):
                 if not (seeders_range[0] <= torrent.seeders <= seeders_range[1]):
                     return False, f"做种人数 {torrent.seeders}，不在指定范围内"
 
-        # 发布时间
-        pubdate_minutes = self.__get_pubminutes(torrent.pubdate)
-        # 已支持独立站点配置，取消单独适配站点时区逻辑，可通过配置项「pubtime」自行适配
-        # pubdate_minutes = self.__adjust_site_pubminutes(pubdate_minutes, torrent)
+        # 发布时间年龄 = 本地当前时间 - 站点显示时间 -（本地时区 - 站点时区）
+        pubdate_minutes = self.__get_pubminutes(
+            torrent.pubdate, brush_config.timezone_offset)
         if brush_config.pubtime:
             pubtimes = [float(n) for n in brush_config.pubtime.split("-")]
             if len(pubtimes) == 1:
                 # 单个值：选择发布时间小于等于该值的种子
                 if pubdate_minutes > pubtimes[0]:
-                    return False, f"发布时间 {torrent.pubdate}，{pubdate_minutes:.0f} 分钟前，不符合条件"
+                    return False, (f"发布时间（站点时间）{torrent.pubdate}，站点时差 "
+                                   f"{brush_config.timezone_offset:+g} 小时，"
+                                   f"{pubdate_minutes:.0f} 分钟前，不符合条件")
             else:
                 # 范围值：选择发布时间在范围内的种子
                 if not (pubtimes[0] <= pubdate_minutes <= pubtimes[1]):
-                    return False, f"发布时间 {torrent.pubdate}，{pubdate_minutes:.0f} 分钟前，不在指定范围内"
+                    return False, (f"发布时间（站点时间）{torrent.pubdate}，站点时差 "
+                                   f"{brush_config.timezone_offset:+g} 小时，"
+                                   f"{pubdate_minutes:.0f} 分钟前，不在指定范围内")
 
         return True, None
 
@@ -2723,7 +2753,8 @@ class BrushFlowLowFreq(_PluginBase):
                 f"但未获取到促销截止时间，跳过删除：{torrent_title}")
             return False, None
 
-        remaining_hours = self.__get_free_remaining_hours(freedate)
+        remaining_hours = self.__get_free_remaining_hours(
+            freedate, brush_config.timezone_offset)
         if remaining_hours is None:
             logger.warning(
                 f"[FreeRemaining] 站点：{site_name}，促销截止时间格式异常：{freedate}，"
@@ -2734,7 +2765,9 @@ class BrushFlowLowFreq(_PluginBase):
             f"[FreeRemaining] 站点：{site_name}，未完成任务当前免费剩余："
             f"{self.__format_free_remaining(remaining_hours)}（{remaining_hours:.2f} 小时），"
             f"已下载：{self.__bytes_to_gb(downloaded):.2f} GB / "
-            f"{self.__bytes_to_gb(total_size):.2f} GB，促销截止：{freedate}，种子：{torrent_title}")
+            f"{self.__bytes_to_gb(total_size):.2f} GB，手动时差："
+            f"{brush_config.timezone_offset:+g} 小时（仅无时区时间生效），"
+            f"促销截止：{freedate}，种子：{torrent_title}")
         if remaining_hours <= 0:
             return True, "促销过期且下载未完成"
         return False, None
@@ -2791,7 +2824,7 @@ class BrushFlowLowFreq(_PluginBase):
     def __evaluate_proxy_pre_conditions_for_delete(self, site_name: str, torrent_info: dict,
                                                    torrent_task: dict) -> Tuple[bool, str]:
         """
-        评估动态删除前置条件并返回是否应删除种子及其原因
+        评估促销过期、下载超时等动态删除前置条件并返回删除结论
         """
         brush_config = self.__get_brush_config(sitename=site_name)
 
@@ -3160,6 +3193,7 @@ class BrushFlowLowFreq(_PluginBase):
             "maxdlspeed": "总下载带宽",
             "maxdlcount": "同时下载任务数",
             "free_remaining": "最低免费剩余时间",
+            "timezone_offset": "站点时差",
             "seed_time": "做种时间",
             "hr_seed_time": "H&R做种时间",
             "seed_ratio": "分享率",
@@ -3238,6 +3272,7 @@ class BrushFlowLowFreq(_PluginBase):
             "size": brush_config.size,
             "seeder": brush_config.seeder,
             "free_remaining": brush_config.free_remaining,
+            "timezone_offset": brush_config.timezone_offset,
             "pubtime": brush_config.pubtime,
             "seed_time": brush_config.seed_time,
             "hr_seed_time": brush_config.hr_seed_time,
@@ -3860,12 +3895,14 @@ class BrushFlowLowFreq(_PluginBase):
             return 0
 
     @staticmethod
-    def __get_free_remaining_hours(freedate: Any) -> Optional[float]:
+    def __get_free_remaining_hours(freedate: Any, timezone_offset: float = 0) -> Optional[float]:
         """
         将免费截止时间转换为剩余小时数。
 
         MoviePilot 通常提供 ``YYYY-MM-DD HH:MM:SS``，同时兼容 ISO 8601 的
-        ``T``、``Z`` 和显式时区偏移格式。返回 None 表示格式异常。
+        ``T``、``Z`` 和显式时区偏移格式。无时区信息时，``timezone_offset``
+        表示“本地时区减站点时区”的小时数；带时区信息时自动忽略手动偏移。
+        返回 None 表示格式异常。
         """
         if not freedate:
             return None
@@ -3878,7 +3915,12 @@ class BrushFlowLowFreq(_PluginBase):
                     free_end_text = f"{free_end_text[:-1]}+00:00"
                 free_end = datetime.fromisoformat(free_end_text)
 
-            now = datetime.now(tz=free_end.tzinfo) if free_end.tzinfo else datetime.now()
+            if free_end.tzinfo is not None and free_end.utcoffset() is not None:
+                now = datetime.now(tz=free_end.tzinfo)
+            else:
+                # 将站点墙上时间换算为 MoviePilot 主机的本地墙上时间。
+                free_end += timedelta(hours=float(timezone_offset or 0))
+                now = datetime.now()
             return (free_end - now).total_seconds() / 3600
         except (TypeError, ValueError, OverflowError):
             return None
@@ -3898,17 +3940,30 @@ class BrushFlowLowFreq(_PluginBase):
         return f"{minutes}分钟"
 
     @staticmethod
-    def __get_pubminutes(pubdate: str) -> float:
+    def __get_pubminutes(pubdate: str, timezone_offset: float = 0) -> float:
         """
-        将字符串转换为时间，并计算与当前时间差）（分钟）
+        将发布时间转换为与当前时间的差值（分钟）。
+
+        无时区信息时按“本地时区减站点时区”修正；自带时区信息时忽略手动时差。
         """
         try:
             if not pubdate:
                 return 0
-            pubdate = pubdate.replace("T", " ").replace("Z", "")
-            pubdate = datetime.strptime(pubdate, "%Y-%m-%d %H:%M:%S")
-            now = datetime.now()
-            return (now - pubdate).total_seconds() // 60
+            if isinstance(pubdate, datetime):
+                publish_time = pubdate
+            else:
+                pubdate_text = str(pubdate).strip()
+                if pubdate_text.endswith("Z"):
+                    pubdate_text = f"{pubdate_text[:-1]}+00:00"
+                publish_time = datetime.fromisoformat(pubdate_text)
+
+            if publish_time.tzinfo is not None and publish_time.utcoffset() is not None:
+                now = datetime.now(tz=publish_time.tzinfo)
+            else:
+                # 将站点墙上时间换算为 MoviePilot 主机的本地墙上时间。
+                publish_time += timedelta(hours=float(timezone_offset or 0))
+                now = datetime.now()
+            return (now - publish_time).total_seconds() // 60
         except Exception as e:
             logger.error(f"发布时间 {pubdate} 获取分钟失败，错误详情: {e}")
             return 0
