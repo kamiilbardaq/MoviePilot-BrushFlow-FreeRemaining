@@ -2,6 +2,8 @@
 
 MoviePilot V2「站点刷流（低频版）」魔改版：新增 `free_remaining`，只下载免费倒计时充足的种子。
 
+v4.3.3.4 已修复数据列表溢出，并增加刷流任务加入时间显示。
+
 上游项目：[InfinityPacer/MoviePilot-Plugins](https://github.com/InfinityPacer/MoviePilot-Plugins/tree/main/plugins.v2/brushflowlowfreq)
 
 ## 安装

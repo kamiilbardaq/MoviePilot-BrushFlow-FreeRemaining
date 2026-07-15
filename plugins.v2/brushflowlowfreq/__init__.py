@@ -266,7 +266,7 @@ class BrushFlowLowFreq(_PluginBase):
     # 插件图标
     plugin_icon = "brush.jpg"
     # 插件版本
-    plugin_version = "4.3.3.3"
+    plugin_version = "4.3.3.4"
     # 插件作者
     plugin_author = "jxxghp,InfinityPacer"
     # 作者主页
@@ -1963,6 +1963,22 @@ class BrushFlowLowFreq(_PluginBase):
                     },
                     {
                         'component': 'td',
+                        'props': {
+                            'class': 'text-no-wrap'
+                        },
+                        'text': self.__format_brush_time(data.get("time"))
+                    },
+                    {
+                        'component': 'td',
+                        'props': {
+                            'style': {
+                                'min-width': '320px',
+                                'max-width': '640px',
+                                'white-space': 'normal',
+                                'overflow-wrap': 'anywhere',
+                                'word-break': 'break-word'
+                            }
+                        },
                         'html': f'<span style="font-size: .85rem;">{data.get("title")}</span>' +
                                 (f'<br><span style="font-size: 0.75rem;">{data.get("description")}</span>' if data.get(
                                     "description") else "")
@@ -1970,26 +1986,44 @@ class BrushFlowLowFreq(_PluginBase):
                     },
                     {
                         'component': 'td',
+                        'props': {
+                            'class': 'text-no-wrap'
+                        },
                         'text': StringUtils.str_filesize(data.get("size"))
                     },
                     {
                         'component': 'td',
+                        'props': {
+                            'class': 'text-no-wrap'
+                        },
                         'text': StringUtils.str_filesize(data.get("uploaded") or 0)
                     },
                     {
                         'component': 'td',
+                        'props': {
+                            'class': 'text-no-wrap'
+                        },
                         'text': StringUtils.str_filesize(data.get("downloaded") or 0)
                     },
                     {
                         'component': 'td',
+                        'props': {
+                            'class': 'text-no-wrap'
+                        },
                         'text': round(data.get('ratio') or 0, 2)
                     },
                     {
                         'component': 'td',
+                        'props': {
+                            'class': 'text-no-wrap'
+                        },
                         'text': "是" if data.get("hit_and_run") else "否"
                     },
                     {
                         'component': 'td',
+                        'props': {
+                            'class': 'text-no-wrap'
+                        },
                         'text': f"{data.get('seeding_time') / 3600:.1f}" if data.get('seeding_time') else "N/A"
                     },
                     {
@@ -2006,95 +2040,154 @@ class BrushFlowLowFreq(_PluginBase):
         # 拼装页面
         return [
             {
+                'component': 'style',
+                'text': """
+                .brushflow-page-row {
+                    min-width: 0;
+                }
+                .brushflow-table-col {
+                    min-width: 0;
+                    max-width: 100%;
+                }
+                .brushflow-table-wrap {
+                    width: 100%;
+                    max-width: 100%;
+                    min-width: 0;
+                    overflow: hidden;
+                }
+                .brushflow-table {
+                    width: 100%;
+                    min-width: 0;
+                }
+                .brushflow-table .v-table__wrapper {
+                    max-width: 100%;
+                    overflow: auto;
+                }
+                .brushflow-table table {
+                    width: 100%;
+                    min-width: 1280px;
+                }
+                """
+            },
+            {
                 'component': 'VRow',
+                'props': {
+                    'class': 'brushflow-page-row'
+                },
                 'content': self.__get_total_elements() + [
                     # 种子明细
                     {
                         'component': 'VCol',
                         'props': {
                             'cols': 12,
+                            'class': 'brushflow-table-col'
                         },
                         'content': [
                             {
-                                'component': 'VTable',
+                                'component': 'div',
                                 'props': {
-                                    'hover': True
+                                    'class': 'brushflow-table-wrap'
                                 },
                                 'content': [
                                     {
-                                        'component': 'thead',
+                                        'component': 'VTable',
                                         'props': {
-                                            'class': 'text-no-wrap'
+                                            'hover': True,
+                                            'fixed-header': True,
+                                            'density': 'compact',
+                                            'height': 'clamp(20rem, calc(100vh - 330px), 40rem)',
+                                            'class': 'brushflow-table'
                                         },
                                         'content': [
                                             {
-                                                'component': 'th',
+                                                'component': 'thead',
                                                 'props': {
-                                                    'class': 'text-start ps-4'
+                                                    'class': 'text-no-wrap'
                                                 },
-                                                'text': '站点'
+                                                'content': [
+                                                    {
+                                                        'component': 'th',
+                                                        'props': {
+                                                            'class': 'text-start ps-4'
+                                                        },
+                                                        'text': '站点'
+                                                    },
+                                                    {
+                                                        'component': 'th',
+                                                        'props': {
+                                                            'class': 'text-start ps-4 text-no-wrap',
+                                                            'style': {
+                                                                'min-width': '145px'
+                                                            }
+                                                        },
+                                                        'text': '刷流时间'
+                                                    },
+                                                    {
+                                                        'component': 'th',
+                                                        'props': {
+                                                            'class': 'text-start ps-4',
+                                                            'style': {
+                                                                'min-width': '320px'
+                                                            }
+                                                        },
+                                                        'text': '标题'
+                                                    },
+                                                    {
+                                                        'component': 'th',
+                                                        'props': {
+                                                            'class': 'text-start ps-4'
+                                                        },
+                                                        'text': '大小'
+                                                    },
+                                                    {
+                                                        'component': 'th',
+                                                        'props': {
+                                                            'class': 'text-start ps-4'
+                                                        },
+                                                        'text': '上传量'
+                                                    },
+                                                    {
+                                                        'component': 'th',
+                                                        'props': {
+                                                            'class': 'text-start ps-4'
+                                                        },
+                                                        'text': '下载量'
+                                                    },
+                                                    {
+                                                        'component': 'th',
+                                                        'props': {
+                                                            'class': 'text-start ps-4'
+                                                        },
+                                                        'text': '分享率'
+                                                    },
+                                                    {
+                                                        'component': 'th',
+                                                        'props': {
+                                                            'class': 'text-start ps-4'
+                                                        },
+                                                        'text': 'HR'
+                                                    },
+                                                    {
+                                                        'component': 'th',
+                                                        'props': {
+                                                            'class': 'text-start ps-4'
+                                                        },
+                                                        'text': '做种时间'
+                                                    },
+                                                    {
+                                                        'component': 'th',
+                                                        'props': {
+                                                            'class': 'text-start ps-4'
+                                                        },
+                                                        'text': '状态'
+                                                    }
+                                                ]
                                             },
                                             {
-                                                'component': 'th',
-                                                'props': {
-                                                    'class': 'text-start ps-4'
-                                                },
-                                                'text': '标题'
-                                            },
-                                            {
-                                                'component': 'th',
-                                                'props': {
-                                                    'class': 'text-start ps-4'
-                                                },
-                                                'text': '大小'
-                                            },
-                                            {
-                                                'component': 'th',
-                                                'props': {
-                                                    'class': 'text-start ps-4'
-                                                },
-                                                'text': '上传量'
-                                            },
-                                            {
-                                                'component': 'th',
-                                                'props': {
-                                                    'class': 'text-start ps-4'
-                                                },
-                                                'text': '下载量'
-                                            },
-                                            {
-                                                'component': 'th',
-                                                'props': {
-                                                    'class': 'text-start ps-4'
-                                                },
-                                                'text': '分享率'
-                                            },
-                                            {
-                                                'component': 'th',
-                                                'props': {
-                                                    'class': 'text-start ps-4'
-                                                },
-                                                'text': 'HR'
-                                            },
-                                            {
-                                                'component': 'th',
-                                                'props': {
-                                                    'class': 'text-start ps-4'
-                                                },
-                                                'text': '做种时间'
-                                            },
-                                            {
-                                                'component': 'th',
-                                                'props': {
-                                                    'class': 'text-start ps-4'
-                                                },
-                                                'text': '状态'
+                                                'component': 'tbody',
+                                                'content': torrent_trs
                                             }
                                         ]
-                                    },
-                                    {
-                                        'component': 'tbody',
-                                        'content': torrent_trs
                                     }
                                 ]
                             }
@@ -3938,6 +4031,16 @@ class BrushFlowLowFreq(_PluginBase):
         if hours:
             return f"{hours}小时{minutes}分钟"
         return f"{minutes}分钟"
+
+    @staticmethod
+    def __format_brush_time(timestamp: Any) -> str:
+        """将刷流任务加入时间格式化为本地时间。"""
+        if timestamp in [None, ""]:
+            return "N/A"
+        try:
+            return datetime.fromtimestamp(float(timestamp)).strftime("%Y-%m-%d %H:%M")
+        except (TypeError, ValueError, OverflowError, OSError):
+            return "N/A"
 
     @staticmethod
     def __get_pubminutes(pubdate: str, timezone_offset: float = 0) -> float:
