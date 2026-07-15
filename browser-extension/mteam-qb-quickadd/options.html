@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>M-Team → qBittorrent 设置</title>
+  <link rel="stylesheet" href="options.css">
+</head>
+<body>
+  <main class="page-shell">
+    <header class="hero">
+      <div class="hero-mark" aria-hidden="true">qB</div>
+      <div>
+        <p class="eyebrow">M-TEAM QUICK ADD</p>
+        <h1>发送到 qBittorrent</h1>
+        <p class="hero-copy">在 M-Team 列表和详情页的下载按钮旁，新增一个直达 qBittorrent 的按钮。</p>
+      </div>
+    </header>
+
+    <form id="settings-form" autocomplete="off">
+      <section class="card">
+        <div class="section-heading">
+          <span class="step">01</span>
+          <div>
+            <h2>M-Team API</h2>
+            <p>用 genDlToken 为所选种子生成一次性下载链接。</p>
+          </div>
+        </div>
+        <div class="field-grid">
+          <label class="field">
+            <span>API 地址</span>
+            <input id="mteam-api-base" name="mteamApiBase" type="url" required spellcheck="false"
+                   placeholder="https://api.m-team.cc">
+          </label>
+          <label class="field">
+            <span>API Key</span>
+            <input id="mteam-api-key" name="mteamApiKey" type="password" required spellcheck="false"
+                   autocomplete="new-password" placeholder="输入 M-Team 身份密钥">
+          </label>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="section-heading">
+          <span class="step">02</span>
+          <div>
+            <h2>qBittorrent WebUI</h2>
+            <p>保存时仅授予该 qBittorrent 主机的网络访问权限。</p>
+          </div>
+        </div>
+        <div class="field-grid">
+          <label class="field field-wide">
+            <span>WebUI 地址</span>
+            <input id="qb-base-url" name="qbBaseUrl" type="url" required spellcheck="false"
+                   placeholder="http://HOST:PORT">
+            <small>支持端口及反向代理子路径，末尾不需要 /api/v2。</small>
+          </label>
+          <label class="field">
+            <span>用户名</span>
+            <input id="qb-username" name="qbUsername" type="text" required autocomplete="username">
+          </label>
+          <label class="field">
+            <span>密码</span>
+            <input id="qb-password" name="qbPassword" type="password" required autocomplete="new-password">
+          </label>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="section-heading">
+          <span class="step">03</span>
+          <div>
+            <h2>新增任务选项</h2>
+            <p>留空时使用 qBittorrent 默认值。</p>
+          </div>
+        </div>
+        <div class="field-grid field-grid-three">
+          <label class="field">
+            <span>保存路径</span>
+            <input id="save-path" name="savePath" type="text" spellcheck="false" placeholder="/downloads">
+          </label>
+          <label class="field">
+            <span>分类</span>
+            <input id="category" name="category" type="text" placeholder="M-Team">
+          </label>
+          <label class="field">
+            <span>标签</span>
+            <input id="tags" name="tags" type="text" placeholder="pt, quick-add">
+          </label>
+        </div>
+        <div class="toggle-grid">
+          <label class="toggle"><input id="paused" name="paused" type="checkbox"><span>暂停新任务</span></label>
+          <label class="toggle"><input id="auto-tmm" name="autoTmm" type="checkbox"><span>自动种子管理</span></label>
+          <label class="toggle"><input id="sequential" name="sequentialDownload" type="checkbox"><span>顺序下载</span></label>
+          <label class="toggle"><input id="first-last" name="firstLastPiecePrio" type="checkbox"><span>优先首尾块</span></label>
+          <label class="toggle"><input id="skip-checking" name="skipChecking" type="checkbox"><span>跳过校验</span></label>
+        </div>
+      </section>
+
+      <aside class="security-note">
+        <strong>密钥处理</strong>
+        <span>API Key 和 qBittorrent 密码保存在本机 <code>chrome.storage.local</code>，不进入同步存储，且内容脚本没有读取权限。清除扩展数据或卸载扩展会删除这些设置。</span>
+      </aside>
+
+      <div class="actions">
+        <button id="save-button" class="button button-primary" type="submit">保存设置</button>
+        <button id="test-button" class="button button-secondary" type="button">测试 qBittorrent</button>
+        <span id="status" class="status" role="status" aria-live="polite"></span>
+      </div>
+    </form>
+  </main>
+  <script src="core.js"></script>
+  <script src="options.js"></script>
+</body>
+</html>

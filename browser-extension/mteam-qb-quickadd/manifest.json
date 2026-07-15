@@ -1,0 +1,46 @@
+{
+  "manifest_version": 3,
+  "name": "M-Team 发送到 qBittorrent",
+  "version": "1.0.0",
+  "description": "在 M-Team 列表和详情页将种子直接发送到 qBittorrent Web API。",
+  "minimum_chrome_version": "102",
+  "permissions": [
+    "storage",
+    "declarativeNetRequestWithHostAccess"
+  ],
+  "host_permissions": [
+    "https://m-team.cc/*",
+    "https://*.m-team.cc/*",
+    "https://m-team.io/*",
+    "https://*.m-team.io/*"
+  ],
+  "optional_host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ],
+  "background": {
+    "service_worker": "service-worker.js"
+  },
+  "action": {
+    "default_title": "M-Team → qBittorrent 设置"
+  },
+  "options_page": "options.html",
+  "content_scripts": [
+    {
+      "matches": [
+        "https://m-team.cc/*",
+        "https://*.m-team.cc/*",
+        "https://m-team.io/*",
+        "https://*.m-team.io/*"
+      ],
+      "js": [
+        "core.js",
+        "content.js"
+      ],
+      "css": [
+        "content.css"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}
