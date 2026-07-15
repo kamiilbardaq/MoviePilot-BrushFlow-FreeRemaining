@@ -16,7 +16,7 @@ from apscheduler.triggers.cron import CronTrigger
 from app import schemas
 from app.chain.torrents import TorrentsChain
 from app.core.config import settings
-from app.core.context import MediaInfo
+from app.core.context import MediaInfo, TorrentInfo as CoreTorrentInfo
 from app.core.metainfo import MetaInfo
 from app.db.site_oper import SiteOper
 from app.db.subscribe_oper import SubscribeOper
@@ -31,6 +31,55 @@ from app.utils.http import RequestUtils
 from app.utils.string import StringUtils
 
 lock = threading.Lock()
+
+
+# M-Team 官方分类。搜索接口必须把普通区与成人区分别以 mode=normal/adult 请求。
+MTEAM_NORMAL_CATEGORIES = {
+    "401": "电影/SD",
+    "419": "电影/HD",
+    "420": "电影/DVDiSo",
+    "421": "电影/Blu-Ray",
+    "439": "电影/Remux",
+    "403": "影剧/综艺/SD",
+    "402": "影剧/综艺/HD",
+    "438": "影剧/综艺/BD",
+    "435": "影剧/综艺/DVDiSo",
+    "404": "纪录教育",
+    "434": "Music（无损）",
+    "406": "演唱/MV",
+    "423": "PC 游戏",
+    "448": "TV 游戏",
+    "405": "动画",
+    "407": "运动",
+    "427": "电子书",
+    "422": "软件",
+    "442": "有声书",
+    "451": "教育影片",
+    "409": "Misc（其他）",
+}
+
+MTEAM_ADULT_CATEGORIES = {
+    "410": "AV（有码）/HD Censored",
+    "424": "AV（有码）/SD Censored",
+    "437": "AV（有码）/DVDiSo Censored",
+    "431": "AV（有码）/Blu-Ray Censored",
+    "429": "AV（无码）/HD Uncensored",
+    "430": "AV（无码）/SD Uncensored",
+    "426": "AV（无码）/DVDiSo Uncensored",
+    "432": "AV（无码）/Blu-Ray Uncensored",
+    "436": "AV（网站）/0Day",
+    "440": "AV（Gay）/HD",
+    "425": "IV（写真影集）",
+    "433": "IV（写真图集）",
+    "411": "H-游戏",
+    "412": "H-动画",
+    "413": "H-漫画",
+}
+
+MTEAM_MOVIE_CATEGORIES = {"401", "419", "420", "421", "439", "405", "404"}
+MTEAM_TV_CATEGORIES = {"403", "402", "435", "438", "404", "405"}
+MTEAM_ALL_CATEGORIES = set(MTEAM_NORMAL_CATEGORIES) | set(MTEAM_ADULT_CATEGORIES)
+MTEAM_API_PAGE_SIZE = 100
 
 
 class BrushConfig:
@@ -54,6 +103,10 @@ class BrushConfig:
         self.exclude = config.get("exclude")
         self.size = config.get("size")
         self.seeder = config.get("seeder")
+        # 非空时启用插件内置 M-Team 完整分类 API；普通区与成人区会自动拆分请求。
+        self.mteam_category_whitelist = self.normalize_mteam_category_whitelist(
+            config.get("mteam_category_whitelist", [])
+        )
         # 最低免费剩余时间（小时）。仅在促销类型为免费或 2X 免费时参与选种。
         self.free_remaining = self.__parse_number(config.get("free_remaining"))
         # 本地时区与站点时区之差（小时）：本地 UTC+8、站点 UTC 时填写 +8。
@@ -113,6 +166,7 @@ class BrushConfig:
             "exclude",
             "size",
             "seeder",
+            "mteam_category_whitelist",
             "free_remaining",
             "timezone_offset",
             "pubtime",
@@ -201,6 +255,10 @@ class BrushConfig:
     "qb_category": "刷流",
     "site_hr_active": true,
     "site_skip_tips": true
+}, {
+    "sitename": "M-Team站点（请替换为实际站点名）",
+    // M-Team 分类白名单；非空时普通区/成人区按 mode 分别请求。以下为影视、纪录、动画推荐值
+    "mteam_category_whitelist": ["401", "419", "420", "421", "439", "403", "402", "438", "435", "404", "405"]
 }]"""
         return desc + config
 
@@ -211,6 +269,35 @@ class BrushConfig:
         if not self.enable_site_config:
             return self
         return self if not sitename else self.group_site_configs.get(sitename, self)
+
+    @staticmethod
+    def normalize_mteam_category_whitelist(value) -> List[str]:
+        """
+        将表单列表、JSON 字符串或逗号分隔值统一成去重后的字符串 ID 列表。
+        未识别的 ID 暂时保留，实际请求时会记录并跳过，避免误刷其它分类。
+        """
+        if value in [None, ""]:
+            return []
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return []
+            if text.startswith("["):
+                try:
+                    value = json.loads(text)
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    value = re.split(r"[,，\s]+", text)
+            else:
+                value = re.split(r"[,，\s]+", text)
+        elif not isinstance(value, (list, tuple, set)):
+            value = [value]
+
+        normalized = []
+        for category_id in value:
+            category_id = str(category_id).strip()
+            if category_id and category_id not in normalized:
+                normalized.append(category_id)
+        return normalized
 
     @staticmethod
     def __parse_number(value):
@@ -262,11 +349,11 @@ class BrushFlowLowFreq(_PluginBase):
     # 插件名称
     plugin_name = "站点刷流（低频版·FreeRemaining）"
     # 插件描述
-    plugin_desc = "自动托管刷流，支持按最低免费剩余时间选种。（基于低频版二次开发）"
+    plugin_desc = "按最低免费剩余时间选种，并支持 M-Team 完整分类白名单 API。（基于低频版二次开发）"
     # 插件图标
     plugin_icon = "brush.jpg"
     # 插件版本
-    plugin_version = "4.3.3.4"
+    plugin_version = "4.3.4.0"
     # 插件作者
     plugin_author = "jxxghp,InfinityPacer"
     # 作者主页
@@ -843,6 +930,13 @@ class BrushFlowLowFreq(_PluginBase):
         # 下载器选项
         downloader_options = [{"title": config.name, "value": config.name}
                               for config in self.downloader_helper.get_configs().values()]
+        mteam_category_options = [
+            {"title": f"[普通] {name}（{category_id}）", "value": category_id}
+            for category_id, name in MTEAM_NORMAL_CATEGORIES.items()
+        ] + [
+            {"title": f"[Adult] {name}（{category_id}）", "value": category_id}
+            for category_id, name in MTEAM_ADULT_CATEGORIES.items()
+        ]
         return [
             {
                 'component': 'VForm',
@@ -1331,6 +1425,34 @@ class BrushFlowLowFreq(_PluginBase):
                                                             'model': 'pubtime',
                                                             'label': '发布时间（分钟）',
                                                             'placeholder': '如：5 或 5-10'
+                                                        }
+                                                    }
+                                                ]
+                                            }
+                                        ]
+                                    },
+                                    {
+                                        'component': 'VRow',
+                                        'content': [
+                                            {
+                                                'component': 'VCol',
+                                                'props': {
+                                                    'cols': 12
+                                                },
+                                                'content': [
+                                                    {
+                                                        'component': 'VAutocomplete',
+                                                        'props': {
+                                                            'model': 'mteam_category_whitelist',
+                                                            'label': 'M-Team 分类白名单',
+                                                            'items': mteam_category_options,
+                                                            'multiple': True,
+                                                            'chips': True,
+                                                            'closable-chips': True,
+                                                            'clearable': True,
+                                                            'hint': ('仅对 M-Team 生效；选择后直接调用完整分类 API，'
+                                                                     '普通与 Adult 分类自动拆分请求；留空沿用 MoviePilot 原生浏览。'),
+                                                            'persistent-hint': True
                                                         }
                                                     }
                                                 ]
@@ -1922,6 +2044,7 @@ class BrushFlowLowFreq(_PluginBase):
             "freeleech": "free",
             "free_remaining": 24,
             "timezone_offset": 0,
+            "mteam_category_whitelist": [],
             "hr": "yes",
             "enable_site_config": False,
             "site_config": BrushConfig.get_demo_site_config()
@@ -2285,6 +2408,372 @@ class BrushFlowLowFreq(_PluginBase):
             self.save_data("statistic", statistic_info)
             logger.info(f"刷流任务执行完成")
 
+    @staticmethod
+    def __mteam_root_domain(url: str) -> str:
+        """从 M-Team 站点地址提取用于 api.<root-domain> 的根域名。"""
+        if not url:
+            return ""
+        root_domain = StringUtils.get_url_domain(url)
+        if root_domain:
+            return root_domain
+        parsed = urlparse(url if "://" in url else f"https://{url}")
+        hostname = (parsed.hostname or "").lower().strip(".")
+        if hostname.startswith("api."):
+            hostname = hostname[4:]
+        parts = hostname.split(".")
+        return ".".join(parts[-2:]) if len(parts) >= 2 else hostname
+
+    @classmethod
+    def __is_mteam_indexer(cls, indexer: Optional[dict] = None, siteinfo=None) -> bool:
+        """通过索引器或站点记录识别 M-Team，避免索引配置读取失败时绕过白名单。"""
+        candidates = []
+        if indexer:
+            if str(indexer.get("parser") or "").lower() == "mtorrent":
+                return True
+            candidates.append(indexer.get("domain") or "")
+        if siteinfo:
+            candidates.extend([
+                getattr(siteinfo, "url", "") or "",
+                getattr(siteinfo, "domain", "") or "",
+            ])
+            site_name = re.sub(r"[\s_-]+", "", str(getattr(siteinfo, "name", "") or "").lower())
+            if "mteam" in site_name or "馒头" in site_name:
+                return True
+        return any("m-team" in cls.__mteam_root_domain(candidate) for candidate in candidates)
+
+    @staticmethod
+    def __mteam_indexer_from_siteinfo(siteinfo) -> dict:
+        """索引器查询失败时，用站点数据库字段构造最小 M-Team API 配置。"""
+        return {
+            "id": getattr(siteinfo, "id", None),
+            "name": getattr(siteinfo, "name", None),
+            "parser": "mTorrent",
+            "domain": getattr(siteinfo, "url", None) or getattr(siteinfo, "domain", None),
+            "cookie": getattr(siteinfo, "cookie", None),
+            "ua": getattr(siteinfo, "ua", None),
+            "apikey": getattr(siteinfo, "apikey", None),
+            "proxy": getattr(siteinfo, "proxy", False),
+            "pri": getattr(siteinfo, "pri", 0),
+            "downloader": getattr(siteinfo, "downloader", None),
+            "timeout": getattr(siteinfo, "timeout", 15),
+        }
+
+    @staticmethod
+    def __mteam_category_id(result: dict) -> str:
+        category = result.get("category") if isinstance(result, dict) else None
+        if isinstance(category, dict):
+            category = category.get("id") or category.get("value")
+        return str(category or "").strip()
+
+    @staticmethod
+    def __mteam_int(value, default: int = 0) -> int:
+        try:
+            return int(value or default)
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def __mteam_timestamp(value) -> Optional[str]:
+        if value in [None, ""]:
+            return None
+        return StringUtils.format_timestamp(value)
+
+    @staticmethod
+    def __mteam_imdbid(value: str) -> str:
+        match = re.search(r"tt\d+", str(value or ""))
+        return match.group(0) if match else ""
+
+    @staticmethod
+    def __mteam_download_factor(discount: str) -> float:
+        return {
+            "FREE": 0,
+            "PERCENT_50": 0.5,
+            "PERCENT_70": 0.3,
+            "_2X_FREE": 0,
+            "_2X_PERCENT_50": 0.5,
+            "P50": 0.5,
+            "P30": 0.3,
+            "_2X_P50": 0.5,
+            "_2X_P30": 0.3,
+        }.get(str(discount or "").upper(), 1)
+
+    @staticmethod
+    def __mteam_upload_factor(discount: str) -> float:
+        return {
+            "_2X": 2.0,
+            "_2X_FREE": 2.0,
+            "_2X_PERCENT_50": 2.0,
+            "_2X_P50": 2.0,
+            "_2X_P30": 2.0,
+        }.get(str(discount or "").upper(), 1)
+
+    @staticmethod
+    def __mteam_download_url(api_root: str, torrent_id: str, api_key: str,
+                             ua: str, use_proxy: bool) -> str:
+        """生成与 MoviePilot mTorrent 核心一致的延迟换取下载地址包装。"""
+        request_params = {
+            "method": "post",
+            "cookie": False,
+            "params": {"id": str(torrent_id)},
+            "header": {
+                "User-Agent": ua,
+                "Accept": "application/json, text/plain, */*",
+                "x-api-key": api_key,
+            },
+            "proxy": bool(use_proxy),
+            "result": "data",
+        }
+        encoded = base64.b64encode(
+            json.dumps(request_params, ensure_ascii=False).encode("utf-8")
+        ).decode("utf-8")
+        return f"[{encoded}]https://api.{api_root}/api/torrent/genDlToken"
+
+    def __parse_mteam_torrent(self, result: dict, siteinfo, indexer: dict,
+                              api_root: str) -> Optional[CoreTorrentInfo]:
+        """解析 M-Team API 结果，并保留 FreeRemaining 所需的促销截止时间。"""
+        torrent_id = str(result.get("id") or "").strip()
+        if not torrent_id or not result.get("name"):
+            return None
+
+        category_id = self.__mteam_category_id(result)
+        if category_id in MTEAM_TV_CATEGORIES and category_id not in MTEAM_MOVIE_CATEGORIES:
+            category = MediaType.TV.value
+        elif category_id in MTEAM_MOVIE_CATEGORIES:
+            category = MediaType.MOVIE.value
+        else:
+            category = MediaType.UNKNOWN.value
+
+        labels = result.get("labelsNew") or []
+        if not isinstance(labels, list):
+            labels = []
+        if not labels:
+            old_labels = {
+                "0": "", "1": "DIY", "2": "国配", "3": "DIY 国配",
+                "4": "中字", "5": "DIY 中字", "6": "国配 中字", "7": "DIY 国配 中字"
+            }.get(str(result.get("labels") or "0"), "")
+            labels = old_labels.split() if old_labels else []
+
+        status = result.get("status") or {}
+        if not isinstance(status, dict):
+            status = {}
+        discount = status.get("discount") or "NORMAL"
+        download_factor = self.__mteam_download_factor(discount)
+        upload_factor = self.__mteam_upload_factor(discount)
+        freedate = self.__mteam_timestamp(status.get("discountEndTime"))
+
+        promotion_rule = status.get("promotionRule")
+        if isinstance(promotion_rule, dict) and promotion_rule:
+            promotion_discount = promotion_rule.get("discount") or "NORMAL"
+            download_factor = self.__mteam_download_factor(promotion_discount)
+            if promotion_rule.get("endTime") not in [None, ""]:
+                freedate = self.__mteam_timestamp(promotion_rule.get("endTime"))
+
+        mall_single_free = status.get("mallSingleFree")
+        if isinstance(mall_single_free, dict) \
+                and str(mall_single_free.get("status") or "").upper() == "ONGOING":
+            download_factor = 0
+            if mall_single_free.get("endDate") not in [None, ""]:
+                freedate = self.__mteam_timestamp(mall_single_free.get("endDate"))
+
+        site_url = str(indexer.get("domain") or getattr(siteinfo, "url", "") or "").strip()
+        if site_url and "://" not in site_url:
+            site_url = f"https://{site_url}"
+        site_url = site_url.rstrip("/") + "/"
+        api_key = indexer.get("apikey") or getattr(siteinfo, "apikey", None)
+        ua = indexer.get("ua") or getattr(siteinfo, "ua", None) or settings.USER_AGENT
+        use_proxy = bool(indexer.get("proxy") or getattr(siteinfo, "proxy", False))
+
+        return CoreTorrentInfo(
+            site=getattr(siteinfo, "id", None) or indexer.get("id"),
+            site_name=getattr(siteinfo, "name", None) or indexer.get("name"),
+            site_cookie=indexer.get("cookie") or getattr(siteinfo, "cookie", None),
+            site_ua=ua,
+            site_proxy=use_proxy,
+            site_order=indexer.get("pri") or getattr(siteinfo, "pri", 0),
+            site_downloader=indexer.get("downloader") or getattr(siteinfo, "downloader", None),
+            title=str(result.get("name") or ""),
+            description=str(result.get("smallDescr") or ""),
+            enclosure=self.__mteam_download_url(api_root, torrent_id, api_key, ua, use_proxy),
+            pubdate=self.__mteam_timestamp(result.get("createdDate") or status.get("createdDate")),
+            size=self.__mteam_int(result.get("size")),
+            seeders=self.__mteam_int(status.get("seeders")),
+            peers=self.__mteam_int(status.get("leechers")),
+            grabs=self.__mteam_int(status.get("timesCompleted")),
+            downloadvolumefactor=download_factor,
+            uploadvolumefactor=upload_factor,
+            page_url=f"{site_url}detail/{torrent_id}",
+            imdbid=self.__mteam_imdbid(result.get("imdb")),
+            labels=labels,
+            category=category,
+            freedate=freedate,
+        )
+
+    def __browse_mteam_torrents(self, siteinfo, indexer: dict,
+                                brush_config: BrushConfig) -> List[CoreTorrentInfo]:
+        """按白名单调用 M-Team 完整分类 API，自动拆分 normal/adult 请求。"""
+        selected = BrushConfig.normalize_mteam_category_whitelist(
+            brush_config.mteam_category_whitelist
+        )
+        normal_categories = [item for item in selected if item in MTEAM_NORMAL_CATEGORIES]
+        adult_categories = [item for item in selected if item in MTEAM_ADULT_CATEGORIES]
+        unknown_categories = [item for item in selected if item not in MTEAM_ALL_CATEGORIES]
+        if unknown_categories:
+            logger.warning(
+                f"[M-Team分类] 站点：{siteinfo.name}，跳过未识别分类：{', '.join(unknown_categories)}"
+            )
+        if not normal_categories and not adult_categories:
+            logger.warning(f"[M-Team分类] 站点：{siteinfo.name}，白名单没有有效分类，本轮不请求种子")
+            return []
+
+        api_key = indexer.get("apikey") or getattr(siteinfo, "apikey", None)
+        if not api_key:
+            logger.error(f"[M-Team分类] 站点：{siteinfo.name}，未配置 API Key")
+            return []
+
+        site_url = indexer.get("domain") or getattr(siteinfo, "url", "") or ""
+        api_root = self.__mteam_root_domain(site_url)
+        if not api_root:
+            logger.error(f"[M-Team分类] 站点：{siteinfo.name}，站点域名解析失败")
+            return []
+
+        try:
+            limited, limit_message = self.sites_helper.check(api_root)
+        except Exception as err:
+            logger.error(f"[M-Team分类] 站点：{siteinfo.name}，访问频率检查异常：{err}")
+            return []
+        if limited:
+            logger.warning(f"[M-Team分类] {limit_message or f'站点 {siteinfo.name} 已触发访问频率限制'}")
+            return []
+
+        api_url = f"https://api.{api_root}/api/torrent/search"
+        ua = indexer.get("ua") or getattr(siteinfo, "ua", None) or settings.USER_AGENT
+        use_proxy = bool(indexer.get("proxy") or getattr(siteinfo, "proxy", False))
+        proxies = settings.PROXY if use_proxy else None
+        timeout = self.__mteam_int(indexer.get("timeout") or getattr(siteinfo, "timeout", 15), 15)
+        referer = str(site_url)
+        if referer and "://" not in referer:
+            referer = f"https://{referer}"
+        referer = referer.rstrip("/") + "/browse"
+
+        request_groups = []
+        if normal_categories:
+            request_groups.append(("normal", normal_categories))
+        if adult_categories:
+            request_groups.append(("adult", adult_categories))
+
+        torrents: List[CoreTorrentInfo] = []
+        seen_ids = set()
+        successful_modes = 0
+        request_started_at = datetime.now()
+        for mode, categories in request_groups:
+            payload = {
+                "mode": mode,
+                # MoviePilot 原生 mTorrent 与 M-Team 生产接口均使用字符串 ID 数组。
+                "categories": list(categories),
+                "pageNumber": 1,
+                "pageSize": MTEAM_API_PAGE_SIZE,
+                "visible": 1,
+                "sortField": "CREATED_DATE",
+                "sortDirection": "DESC",
+            }
+            logger.info(
+                f"[M-Team分类] 站点：{siteinfo.name}，请求模式：{mode}，"
+                f"分类白名单（{len(categories)}）：{', '.join(categories)}"
+            )
+            try:
+                response = RequestUtils(
+                    headers={
+                        "Accept": "application/json",
+                        "Content-Type": "application/json",
+                        "User-Agent": ua,
+                        "x-api-key": api_key,
+                    },
+                    proxies=proxies,
+                    referer=referer,
+                    timeout=timeout,
+                ).post_res(url=api_url, json=payload)
+            except Exception as err:
+                logger.error(f"[M-Team分类] 站点：{siteinfo.name}，{mode} 请求异常：{err}")
+                continue
+
+            if response is None:
+                logger.error(f"[M-Team分类] 站点：{siteinfo.name}，{mode} 请求未收到响应")
+                continue
+            if getattr(response, "status_code", None) != 200:
+                logger.error(
+                    f"[M-Team分类] 站点：{siteinfo.name}，{mode} 请求失败，"
+                    f"HTTP {getattr(response, 'status_code', 'unknown')}"
+                )
+                continue
+            try:
+                response_json = response.json()
+            except Exception as err:
+                logger.error(f"[M-Team分类] 站点：{siteinfo.name}，{mode} 返回 JSON 异常：{err}")
+                continue
+            if not isinstance(response_json, dict):
+                logger.error(f"[M-Team分类] 站点：{siteinfo.name}，{mode} 返回结构异常")
+                continue
+
+            response_code = response_json.get("code")
+            if response_code is not None and str(response_code) not in {"0", "200"}:
+                logger.error(
+                    f"[M-Team分类] 站点：{siteinfo.name}，{mode} API 拒绝请求，"
+                    f"code={response_code}，message={response_json.get('message') or 'unknown'}"
+                )
+                continue
+            response_data = response_json.get("data")
+            if not isinstance(response_data, dict):
+                logger.error(f"[M-Team分类] 站点：{siteinfo.name}，{mode} 返回 data 为空或格式异常")
+                continue
+            results = response_data.get("data")
+            if results is None:
+                results = response_data.get("torrents")
+            if results is None:
+                results = []
+            if not isinstance(results, list):
+                logger.error(f"[M-Team分类] 站点：{siteinfo.name}，{mode} 返回种子列表格式异常")
+                continue
+
+            successful_modes += 1
+
+            allowed_categories = set(categories)
+            kept = 0
+            for result in results:
+                if not isinstance(result, dict):
+                    continue
+                category_id = self.__mteam_category_id(result)
+                if category_id not in allowed_categories:
+                    continue
+                torrent_id = str(result.get("id") or "").strip()
+                if not torrent_id or torrent_id in seen_ids:
+                    continue
+                try:
+                    torrent = self.__parse_mteam_torrent(result, siteinfo, indexer, api_root)
+                except Exception as err:
+                    logger.warning(
+                        f"[M-Team分类] 站点：{siteinfo.name}，种子 {torrent_id or 'unknown'} 解析失败：{err}"
+                    )
+                    continue
+                if torrent:
+                    torrents.append(torrent)
+                    seen_ids.add(torrent_id)
+                    kept += 1
+            logger.info(
+                f"[M-Team分类] 站点：{siteinfo.name}，{mode} 返回 {len(results)} 条，"
+                f"白名单保留 {kept} 条"
+            )
+
+        logger.info(f"[M-Team分类] 站点：{siteinfo.name}，合并去重后共 {len(torrents)} 条")
+        try:
+            elapsed_seconds = max(0, int((datetime.now() - request_started_at).total_seconds()))
+            if successful_modes:
+                self.site_oper.success(domain=api_root, seconds=elapsed_seconds)
+            else:
+                self.site_oper.fail(api_root)
+        except Exception as err:
+            logger.warning(f"[M-Team分类] 站点：{siteinfo.name}，更新站点请求统计失败：{err}")
+        return torrents
+
     def __brush_site_torrents(self, siteid, torrent_tasks: Dict[str, dict], statistic_info: Dict[str, int],
                               subscribe_titles: Set[str]) -> bool:
         """
@@ -2295,13 +2784,27 @@ class BrushFlowLowFreq(_PluginBase):
             logger.warning(f"站点不存在：{siteid}")
             return True
 
+        brush_config = self.__get_brush_config(sitename=siteinfo.name)
         logger.info(f"开始获取站点 {siteinfo.name} 的新种子 ...")
-        torrents = self.torrents_chain.browse(domain=siteinfo.domain)
+        try:
+            indexer = self.sites_helper.get_indexer(siteinfo.domain)
+        except Exception as err:
+            logger.warning(f"站点 {siteinfo.name} 获取索引配置失败，将根据站点记录继续处理：{err}")
+            indexer = None
+
+        if brush_config.mteam_category_whitelist and self.__is_mteam_indexer(indexer, siteinfo):
+            if not indexer:
+                indexer = self.__mteam_indexer_from_siteinfo(siteinfo)
+            torrents = self.__browse_mteam_torrents(
+                siteinfo=siteinfo,
+                indexer=indexer,
+                brush_config=brush_config,
+            )
+        else:
+            torrents = self.torrents_chain.browse(domain=siteinfo.domain)
         if not torrents:
             logger.info(f"站点 {siteinfo.name} 没有获取到种子")
             return True
-
-        brush_config = self.__get_brush_config(sitename=siteinfo.name)
 
         if brush_config.site_hr_active:
             logger.info(f"站点 {siteinfo.name} 已开启全站H&R选项，所有种子设置为H&R种子")
@@ -2325,7 +2828,12 @@ class BrushFlowLowFreq(_PluginBase):
             if not pre_condition_passed:
                 return False
 
-            logger.debug(f"种子详情：{torrent}")
+            # enclosure 可能包含 Base64 包装的 API Key，不输出完整对象。
+            logger.debug(
+                f"种子详情：站点={torrent.site_name}，标题={torrent.title}|{torrent.description}，"
+                f"分类={torrent.category}，大小={torrent.size}，做种={torrent.seeders}，"
+                f"促销={torrent.volume_factor}，截止={torrent.freedate}，详情页={torrent.page_url}"
+            )
 
             # 判断能否通过保种体积刷流条件
             size_condition_passed, reason = self.__evaluate_size_condition_for_brush(torrents_size=torrents_size,
@@ -3334,6 +3842,19 @@ class BrushFlowLowFreq(_PluginBase):
             config["active_time_range"] = None
             found_error = True  # 更新错误标志
 
+        mteam_categories = BrushConfig.normalize_mteam_category_whitelist(
+            config.get("mteam_category_whitelist", [])
+        )
+        config["mteam_category_whitelist"] = mteam_categories
+        unknown_mteam_categories = [
+            category_id for category_id in mteam_categories
+            if category_id not in MTEAM_ALL_CATEGORIES
+        ]
+        if unknown_mteam_categories:
+            logger.warning(
+                f"[M-Team分类] 白名单含未识别分类，将在请求时跳过：{', '.join(unknown_mteam_categories)}"
+            )
+
         # 如果发现任何错误，返回False；否则返回True
         return not found_error
 
@@ -3364,6 +3885,7 @@ class BrushFlowLowFreq(_PluginBase):
             "exclude": brush_config.exclude,
             "size": brush_config.size,
             "seeder": brush_config.seeder,
+            "mteam_category_whitelist": brush_config.mteam_category_whitelist,
             "free_remaining": brush_config.free_remaining,
             "timezone_offset": brush_config.timezone_offset,
             "pubtime": brush_config.pubtime,

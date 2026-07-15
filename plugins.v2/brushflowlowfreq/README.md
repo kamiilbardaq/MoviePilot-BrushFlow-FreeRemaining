@@ -1,10 +1,16 @@
 # 站点刷流（低频版·FreeRemaining）
 
-基于 [InfinityPacer/MoviePilot-Plugins](https://github.com/InfinityPacer/MoviePilot-Plugins/tree/main/plugins.v2/brushflowlowfreq) 的低频版二次开发，新增 `free_remaining` 最低免费剩余时间规则。感谢 [@jxxghp](https://github.com/jxxghp) 与 [@InfinityPacer](https://github.com/InfinityPacer) 的原始工作。
+基于 [InfinityPacer/MoviePilot-Plugins](https://github.com/InfinityPacer/MoviePilot-Plugins/tree/main/plugins.v2/brushflowlowfreq) 的低频版二次开发，新增 `free_remaining` 最低免费剩余时间规则及 M-Team 完整分类白名单 API。感谢 [@jxxghp](https://github.com/jxxghp) 与 [@InfinityPacer](https://github.com/InfinityPacer) 的原始工作。
 
 **本文档仅适用于 `MoviePilot V2`。**
 
 ## 版本更新日志
+
+- v4.3.4.0
+  - 新增「M-Team 分类白名单」，覆盖 21 个普通分类和 15 个 Adult 分类
+  - 白名单自动拆分为 `mode=normal` 与 `mode=adult` 两次官方 API 请求，结果合并去重
+  - 完整解析 M-Team 促销、全站促销、商城单种免费及截止时间，继续联动 FreeRemaining
+  - 新增 `[M-Team分类]` 请求与过滤日志；API 异常时保持严格白名单，不切回无分类过滤结果
 
 - v4.3.3.4
   - 修复数据页长标题撑开表格、右侧列显示不完整的问题
@@ -66,6 +72,7 @@
 | 促销                   | `freeleech`          | 根据促销类型过滤任务                 | 包括全部、免费和 2X 免费，免费包括 2X 免费                                                                                         |
 | 最低免费剩余（小时）   | `free_remaining`     | 限时免费剩余时间低于该值时跳过       | 仅在促销为“免费”或“2X免费”时生效；留空或 0 表示关闭；无截止时间按长期/永久免费放行                                  |
 | 站点时差（小时）       | `timezone_offset`    | 修正发布时间和无时区免费截止时间     | `主机时区 - 站点时区`；同区填 `0`，主机 UTC+8/站点 UTC 填 `8`；支持 0.25 小时步进和负数                           |
+| M-Team 分类白名单      | `mteam_category_whitelist` | 限定 M-Team 刷流分类并启用完整分类 API | 普通与 Adult 自动拆分请求；留空沿用 MoviePilot 原生浏览；仅对 M-Team 生效                                      |
 | 删除促销过期的未完成下载 | `del_no_free`      | 促销截止后删除仍未完成的任务及文件   | 仅在促销为“免费”或“2X免费”时生效；作为 `free_remaining` 的兜底保护                                     |
 | 排除 H&R               | `hr`                 | 是否排除有 H&R 要求的任务            |                                                                                                                   |
 | 总上传带宽（KB/s）     | `maxupspeed`         | 达到设定的上传带宽后停止刷流         |                                                                                                                   |
@@ -101,6 +108,59 @@
 | 打开站点配置窗口       | `dialog_closed`      | 控制站点独立配置页面的显示状态       | 点击后可打开站点独立配置页面                                                                                      |
 | 双向同步官方插件数据   | `sync_official`      | 是否双向同步官方插件数据             | 如存在重复任务，默认以本插件的任务为准                                                                            |
 
+## M-Team 完整分类白名单 API
+
+MoviePilot 核心的 M-Team 浏览请求不传分类模式，且影视类型映射只覆盖电影、电视剧相关 ID。本版在「选种规则」中增加 **M-Team 分类白名单**：白名单非空时，插件直接调用 M-Team 搜索 API，并严格保留所选分类。
+
+分类与请求字段参考 [M-Team API 说明](https://wiki.m-team.cc/zh-tw/api)、[M-Team OpenAPI](https://test2.m-team.cc/api/v3/api-docs) 及 [Jackett M-Team 适配](https://github.com/Jackett/Jackett/blob/master/src/Jackett.Common/Indexers/Definitions/MTeamTp.cs)。
+
+请求规则：
+
+1. 普通分类使用 `mode=normal`；Adult 分类使用 `mode=adult`，两类不会混在同一个请求中。
+2. 每个模式请求最新 100 条活种：`pageNumber=1`、`pageSize=100`、`visible=1`，按 `CREATED_DATE DESC` 排序。
+3. 返回数据再次按分类 ID 校验，再按种子 ID 合并去重。
+4. 白名单为空时沿用 MoviePilot 原生浏览；非空且 API 报错时，本轮该模式不产生候选，避免下载白名单之外的资源。
+5. 成人分类只有被明确选中时才会发起 `adult` 请求，并需在 M-Team 账号设置中开启对应内容。
+6. 低频版每 10 分钟刷流一次；只选普通分类约 144 次搜索/天，同时选普通与 Adult 约 288 次/天。
+7. 自定义分类请求继续遵守 MoviePilot 站点访问频率限制，并写入站点成功/失败统计。
+
+### 普通分类（21）
+
+| ID | 分类 | ID | 分类 | ID | 分类 |
+| ---: | --- | ---: | --- | ---: | --- |
+| 401 | 电影/SD | 419 | 电影/HD | 420 | 电影/DVDiSo |
+| 421 | 电影/Blu-Ray | 439 | 电影/Remux | 403 | 影剧/综艺/SD |
+| 402 | 影剧/综艺/HD | 438 | 影剧/综艺/BD | 435 | 影剧/综艺/DVDiSo |
+| 404 | 纪录教育 | 434 | Music（无损） | 406 | 演唱/MV |
+| 423 | PC 游戏 | 448 | TV 游戏 | 405 | 动画 |
+| 407 | 运动 | 427 | 电子书 | 422 | 软件 |
+| 442 | 有声书 | 451 | 教育影片 | 409 | Misc（其他） |
+
+### Adult 分类（15）
+
+| ID | 分类 | ID | 分类 | ID | 分类 |
+| ---: | --- | ---: | --- | ---: | --- |
+| 410 | AV（有码）/HD | 424 | AV（有码）/SD | 437 | AV（有码）/DVDiSo |
+| 431 | AV（有码）/Blu-Ray | 429 | AV（无码）/HD | 430 | AV（无码）/SD |
+| 426 | AV（无码）/DVDiSo | 432 | AV（无码）/Blu-Ray | 436 | AV（网站）/0Day |
+| 440 | AV（Gay）/HD | 425 | IV（写真影集） | 433 | IV（写真图集） |
+| 411 | H-游戏 | 412 | H-动画 | 413 | H-漫画 |
+
+### 推荐白名单
+
+- **影视刷流（推荐）**：`401,419,420,421,439,403,402,438,435,404,405`
+- **高码率电影**：`419,421,439`
+- **剧集/综艺**：`403,402,438,435`
+- **音乐与演唱**：`434,406`
+
+日志示例：
+
+```text
+[M-Team分类] 站点：馒头，请求模式：normal，分类白名单（11）：401, 419, ...
+[M-Team分类] 站点：馒头，normal 返回 100 条，白名单保留 42 条
+[M-Team分类] 站点：馒头，合并去重后共 42 条
+```
+
 ## `free_remaining` 规则
 
 1. 先按 `freeleech` 判断种子当前是否免费。
@@ -117,6 +177,7 @@
 - 公式：`timezone_offset = MoviePilot 主机本地 UTC 偏移 - 站点显示 UTC 偏移`。
 - 该值同时用于发布时间年龄和无时区信息的免费截止时间；修改后请先检查 INFO 日志，再开启促销过期自动清理。
 - MoviePilot 与站点均为 UTC+8：填 `0`。
+- M-Team 完整分类 API 返回 Unix 时间戳；M-Team 的站点独立配置请保持 `0`，避免再次修正发布时间与免费截止时间。
 - MoviePilot 为 UTC+8、站点显示 UTC：填 `8`。
 - MoviePilot 为 UTC、站点显示 UTC+8：填 `-8`。
 - 发布时间或截止时间自带 `Z`、`+00:00`、`+08:00` 等时区信息时，插件直接按绝对时间计算，手动时差不会重复生效。
@@ -160,6 +221,7 @@
 - `exclude`：排除规则
 - `size`：种子大小
 - `seeder`：做种人数
+- `mteam_category_whitelist`：M-Team 分类 ID 白名单；支持字符串数组、数字数组或逗号分隔字符串
 - `free_remaining`：最低免费剩余时间（小时）
 - `timezone_offset`：站点时差（小时），计算方式为主机时区减站点时区
 - `del_no_free`：删除促销过期的未完成下载
@@ -220,6 +282,9 @@
     "qb_category": "刷流",
     "site_hr_active": true,
     "site_skip_tips": true
+}, {
+    "sitename": "M-Team站点（请替换为实际站点名）",
+    "mteam_category_whitelist": ["401", "419", "420", "421", "439", "403", "402", "438", "435", "404", "405"]
 }]
 ```
 

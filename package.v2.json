@@ -1,13 +1,14 @@
 {
   "BrushFlowLowFreq": {
     "name": "站点刷流（低频版·FreeRemaining）",
-    "description": "按最低免费剩余时间过滤限时免费种子，并清理促销过期的未完成下载。",
-    "labels": "站点,刷流,免费,FreeRemaining",
-    "version": "4.3.3.4",
+    "description": "按最低免费剩余时间过滤限时免费种子，支持 M-Team 完整分类白名单 API。",
+    "labels": "站点,刷流,免费,FreeRemaining,M-Team,分类白名单",
+    "version": "4.3.4.0",
     "icon": "https://raw.githubusercontent.com/kamiilbardaq/MoviePilot-BrushFlow-FreeRemaining/main/icons/brush.jpg",
     "author": "jxxghp,InfinityPacer,kamiilbardaq",
     "level": 2,
     "history": {
+      "v4.3.4.0": "新增 M-Team 36 个分类白名单，按 normal/adult 分模式请求完整分类 API 并合并去重",
       "v4.3.3.4": "修复数据列表溢出，增加固定表头、表格滚动与刷流时间列",
       "v4.3.3.3": "新增站点时差配置，修正跨时区 FreeRemaining 倒计时和促销过期判断",
       "v4.3.3.2": "新增促销过期未完成下载清理，并在日志显示当前 FreeRemaining 时间",
